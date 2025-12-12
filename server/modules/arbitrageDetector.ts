@@ -1,113 +1,102 @@
-import { NormalizedMarketData } from "./dataFetcher";
-import { ArbitrageOpportunity } from "../models";
+// import { NormalizedMarketData } from "./dataFetcher";
+// import { HybridMarketMatcher } from "./hybridMatcher";
 
-export interface DetectedOpportunity {
-  platformA: string;
-  platformB: string;
-  marketIdA: string;
-  marketIdB: string;
-  event: string;
-  priceA: number;
-  priceB: number;
-  profitPercent: number;
-  profitPercentPerDay?: number;
-  daysUntilEvent?: number;
-}
+// export interface ArbitrageOpportunity {
+//   id?: string;
+//   marketIdA: string;
+//   marketIdB: string;
+//   platformA: string;
+//   platformB: string;
+//   event: string;
+//   priceA: number;
+//   priceB: number;
+//   profitPercent: number;
+//   detectedAt?: Date;
+// }
 
-export class ArbitrageDetector {
-  private readonly MIN_PROFIT_THRESHOLD = 0.5;
+// export class ArbitrageDetector {
+//   private matcher = new HybridMarketMatcher();
 
-  private calculateProfit(priceA: number, priceB: number): number {
-    const cost = Math.min(priceA, priceB) + (1 - Math.max(priceA, priceB));
-    const return_value = 1;
-    return ((return_value - cost) / cost) * 100;
-  }
+//   async detectOpportunities(markets: NormalizedMarketData[]): Promise<ArbitrageOpportunity[]> {
+//     const polymarkets = markets.filter((m: NormalizedMarketData) => m.source === "Polymarket");
+//     const kalshiMarkets = markets.filter((m: NormalizedMarketData) => m.source === "Kalshi");
 
-  private matchEvents(markets: NormalizedMarketData[]): Map<string, NormalizedMarketData[]> {
-    const eventMap = new Map<string, NormalizedMarketData[]>();
+//     const matchedGroups = await this.matcher.matchMarkets(polymarkets, kalshiMarkets);
+//     const opportunities: ArbitrageOpportunity[] = [];
 
-    for (const market of markets) {
-      const key = `${market.event.toLowerCase()}-${market.side.toLowerCase()}`;
-      if (!eventMap.has(key)) {
-        eventMap.set(key, []);
-      }
-      eventMap.get(key)!.push(market);
-    }
+//     console.log(`\n📉 ANALYZING SPREADS for ${matchedGroups.size} verified pairs...`);
 
-    return eventMap;
-  }
+//     for (const [key, group] of matchedGroups) {
+//       const poly = group.filter((m: NormalizedMarketData) => m.source === "Polymarket");
+//       const kalshi = group.filter((m: NormalizedMarketData) => m.source === "Kalshi");
 
-  async detectOpportunities(markets: NormalizedMarketData[]): Promise<DetectedOpportunity[]> {
-    const opportunities: DetectedOpportunity[] = [];
-    const matchedEvents = this.matchEvents(markets);
+//       for (const p of poly) {
+//         for (const k of kalshi) {
+          
+//           // Debug Log: Show what we are comparing
+//           // console.log(`   Checking: ${key} | P:${p.price.toFixed(3)} vs K:${k.price.toFixed(3)}`);
 
-    for (const [eventKey, eventMarkets] of matchedEvents) {
-      if (eventMarkets.length < 2) continue;
+//           // 1. LIQUIDITY FILTER (Relaxed slightly to 0.5% to see more data)
+//           if (p.price > 0.99 || p.price < 0.005) continue;
+//           if (k.price > 0.99 || k.price < 0.005) continue;
 
-      for (let i = 0; i < eventMarkets.length; i++) {
-        for (let j = i + 1; j < eventMarkets.length; j++) {
-          const marketA = eventMarkets[i];
-          const marketB = eventMarkets[j];
+//           // 2. CALC SPREAD (Yes on A, No on B)
+//           // Cost = PriceA + (1 - PriceB)
+//           // Spread = 1 - Cost. (Positive spread = Profit)
+//           const cost1 = p.price + (1 - k.price);
+//           const spread1 = 1 - cost1;
+          
+//           if (spread1 > -0.05) { // Log anything close (within 5%)
+//              const profit = ((1 - cost1) / cost1) * 100;
+//              const isProfitable = profit > 0;
+             
+//              const icon = isProfitable ? "💰" : "📉";
+//              console.log(`   ${icon} [${key}] Spread: ${(spread1 * 100).toFixed(2)}% | P:${p.price} / K:${k.price}`);
 
-          if (marketA.source === marketB.source) continue;
+//              if (isProfitable) {
+//                 opportunities.push({
+//                    marketIdA: p.marketId,
+//                    marketIdB: k.marketId,
+//                    platformA: "Polymarket",
+//                    platformB: "Kalshi",
+//                    event: key,
+//                    priceA: p.price,
+//                    priceB: k.price,
+//                    profitPercent: parseFloat(profit.toFixed(2)),
+//                    detectedAt: new Date()
+//                 });
+//              }
+//           }
 
-          const profitPercent = this.calculateProfit(marketA.price, marketB.price);
+//           // 3. INVERSE CALC (No on A, Yes on B)
+//           const cost2 = (1 - p.price) + k.price;
+//           const spread2 = 1 - cost2;
 
-          if (Math.abs(profitPercent) >= this.MIN_PROFIT_THRESHOLD) {
-            const daysUntilEvent = this.estimateDaysUntilEvent(marketA.event);
-            const profitPercentPerDay = daysUntilEvent 
-              ? profitPercent / daysUntilEvent 
-              : undefined;
+//           if (spread2 > -0.05) {
+//             const profit = ((1 - cost2) / cost2) * 100;
+//             const isProfitable = profit > 0;
 
-            opportunities.push({
-              platformA: marketA.source,
-              platformB: marketB.source,
-              marketIdA: marketA.marketId,
-              marketIdB: marketB.marketId,
-              event: marketA.event,
-              priceA: marketA.price,
-              priceB: marketB.price,
-              profitPercent,
-              profitPercentPerDay,
-              daysUntilEvent,
-            });
-          }
-        }
-      }
-    }
+//             const icon = isProfitable ? "💰" : "📉";
+//             console.log(`   ${icon} [${key} INV] Spread: ${(spread2 * 100).toFixed(2)}% | P:${p.price} / K:${k.price}`);
 
-    return opportunities;
-  }
+//             if (isProfitable) {
+//                opportunities.push({
+//                   marketIdA: p.marketId,
+//                   marketIdB: k.marketId,
+//                   platformA: "Polymarket",
+//                   platformB: "Kalshi",
+//                   event: key + " (Inverse)",
+//                   priceA: p.price,
+//                   priceB: k.price,
+//                   profitPercent: parseFloat(profit.toFixed(2)),
+//                   detectedAt: new Date()
+//                });
+//             }
+//           }
+//         }
+//       }
+//     }
 
-  private estimateDaysUntilEvent(event: string): number | undefined {
-    if (event.includes("2024")) {
-      const endOf2024 = new Date("2024-12-31");
-      const now = new Date();
-      const diffTime = endOf2024.getTime() - now.getTime();
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      return diffDays > 0 ? diffDays : 1;
-    }
-    
-    return 30;
-  }
-
-  async saveOpportunities(opportunities: DetectedOpportunity[]): Promise<void> {
-    for (const opp of opportunities) {
-      const existing = await ArbitrageOpportunity.findOne({
-        platformA: opp.platformA,
-        platformB: opp.platformB,
-        event: opp.event,
-        status: "active",
-      });
-
-      if (!existing) {
-        await ArbitrageOpportunity.create({
-          ...opp,
-          status: "active",
-          detectedAt: new Date(),
-        });
-        console.log(`✅ New arbitrage detected: ${opp.event} (${opp.profitPercent.toFixed(2)}%)`);
-      }
-    }
-  }
-}
+//     return opportunities;
+//   }
+// }

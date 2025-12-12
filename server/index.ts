@@ -51,7 +51,7 @@ app.use((req, res, next) => {
 
 (async () => {
   try {
-    await connectDB();
+    // await connectDB();
     const server = await registerRoutes(app);
 
     const scheduler = new Scheduler();
@@ -73,7 +73,7 @@ app.use((req, res, next) => {
     server.listen({
       port,
       host: "0.0.0.0",
-      reusePort: true,
+      // reusePort: true,
     }, () => {
       log(`serving on port ${port}`);
     });
