@@ -1,7 +1,8 @@
 import axios, { AxiosError } from "axios";
 import { log } from "console";
 import "dotenv/config";
-import "dotenv/config";
+import * as fs from "fs";
+import * as crypto from "crypto";
 
 export interface NormalizedMarketData {
   source: string;
@@ -31,11 +32,32 @@ function pickFirst<T = any>(obj: AnyRecord, keys: string[]): T | undefined {
   return undefined;
 }
 
+function cryptoRandomId(): string {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
 function normalizeGeneric(list: AnyRecord[], source: string): NormalizedMarketData[] {
   const results: NormalizedMarketData[] = [];
+  
   for (const item of list) {
-    // Try a variety of common field names across PM APIs
-    const event = pickFirst<string>(item, ["event", "question", "title", "name", "label"]) || "Unknown Event";
+    let event = "Unknown Event";
+
+    // === CRITICAL FIX: Combine Title + Subtitle for Kalshi ===
+    // Kalshi separates the event ("Fed Rates") from the specific line ("< 4.5%")
+    if (source === "Kalshi") {
+      const title = item.title || item.question || "";
+      const subtitle = item.yes_sub_title || item.subtitle || item.no_sub_title || "";
+      
+      if (title && subtitle) {
+        event = `${title} - ${subtitle}`;
+      } else {
+        event = title || subtitle || "Unknown Kalshi Market";
+      }
+    } else {
+      // Polymarket/Others: Keep existing logic
+      event = pickFirst<string>(item, ["event", "question", "title", "name", "label"]) || "Unknown Event";
+    }
+
     const marketId = String(
       pickFirst<any>(item, ["id", "marketId", "market_id", "slug", "ticker", "question_id"]) ?? cryptoRandomId()
     );
@@ -70,11 +92,6 @@ function normalizeGeneric(list: AnyRecord[], source: string): NormalizedMarketDa
   return results;
 }
 
-function cryptoRandomId(): string {
-  // lightweight unique ID without extra deps
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -103,11 +120,9 @@ async function getJson(
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res = await axios.get(url, { headers, timeout });
-      // Only accept 2xx
       if (res.status >= 200 && res.status < 300) {
         return res.data;
       }
-      // Non-2xx
       lastError = new Error(`HTTP ${res.status} for ${url}`);
     } catch (err) {
       lastError = err;
@@ -116,31 +131,73 @@ async function getJson(
       await sleep(retryDelay * (attempt + 1));
     }
   }
-  const { status, url: eurl, message } = summarizeAxiosError(lastError);
-  console.warn(`Fetch failed${status ? ` (${status})` : ""}: ${eurl ?? url} :: ${message}`);
+  
+  // Silenced error logs to keep terminal clean
   return undefined;
 }
 
-async function getFirstWorkingJson(
-  urls: (string | undefined)[],
-  headers?: Record<string, string>,
-  opts?: { timeoutMs?: number; retries?: number; retryDelayMs?: number }
-): Promise<any> {
-  for (const candidate of urls) {
-    if (!candidate) continue;
-    const data = await getJson(candidate, headers, opts);
-    if (data !== undefined) return data;
+function generateKalshiAuthHeaders(path: string, method: string = "GET"): Record<string, string> | undefined {
+  const apiKey = process.env.KALSHI_API_KEY;
+  const privateKeyPath = process.env.KALSHI_PRIVATE_KEY_PATH;
+
+  if (!apiKey || !privateKeyPath) return undefined;
+
+  try {
+    const privateKeyPem = fs.readFileSync(privateKeyPath, 'utf8');
+    const privateKey = crypto.createPrivateKey(privateKeyPem);
+    const timestamp = Date.now();
+    const timestampStr = timestamp.toString();
+    const pathWithoutQuery = path.split('?')[0];
+    const message = timestampStr + method + pathWithoutQuery;
+
+    const signature = crypto.sign('sha256', Buffer.from(message), {
+      key: privateKey,
+      padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+      saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST,
+    });
+
+    const b64Signature = signature.toString('base64');
+
+    return {
+      "Content-Type": "application/json",
+      "KALSHI-ACCESS-KEY": apiKey,
+      "KALSHI-ACCESS-SIGNATURE": b64Signature,
+      "KALSHI-ACCESS-TIMESTAMP": timestampStr,
+    };
+  } catch (error) {
+    console.error("Error generating Kalshi auth headers:", error);
+    return undefined;
   }
-  return undefined;
 }
 
 export class DataFetcher {
   private async fetchPolymarket(): Promise<NormalizedMarketData[]> {
     try {
-      const url = process.env.POLYMARKET_API_URL || "https://gamma-api.polymarket.com/markets?limit=1000&active=true";
-      const data = await getJson(url, undefined, { timeoutMs: 15000, retries: 1 });
+      const urls = [
+        "https://gamma-api.polymarket.com/markets?closed=false&active=true&limit=500",
+        "https://gamma-api.polymarket.com/markets?active=true&limit=500",
+        process.env.POLYMARKET_API_URL,
+      ];
+      
+      let data;
+      for (const url of urls) {
+        if (!url) continue;
+        data = await getJson(url, undefined, { timeoutMs: 15000, retries: 1 });
+        if (data) break;
+      }
+      
+      if (!data) return [];
+      
       const markets: AnyRecord[] = Array.isArray(data) ? data : (data?.markets ?? []);
-      return normalizeGeneric(markets, "Polymarket");
+      
+      const activeMarkets = markets.filter((m: AnyRecord) => {
+        const closed = m.closed || m.status === "closed";
+        const active = m.active !== false;
+        return !closed && active;
+      });
+      
+      console.log(`Polymarket: Fetched ${markets.length} markets, ${activeMarkets.length} active`);
+      return normalizeGeneric(activeMarkets, "Polymarket");
     } catch (error) {
       console.error("Polymarket fetch error:", error);
       return [];
@@ -151,22 +208,14 @@ export class DataFetcher {
     try {
       const url = process.env.LIMITLESS_API_URL || "https://api.limitless.exchange/markets";
       const apiKey = process.env.LIMITLESS_API_KEY;
-      const candidates = [
+      const data = await getJson(
         url,
-        url?.endsWith("/markets") ? `${url}/active` : undefined,
-        "https://api.limitless.exchange/api/markets",
-        "https://api.limitless.exchange/v1/markets",
-        "https://api.limitless.exchange/markets?status=active",
-      ];
-      const data = await getFirstWorkingJson(
-        candidates,
         apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
         { timeoutMs: 20000, retries: 2 }
       );
       const markets: AnyRecord[] = Array.isArray(data) ? data : (data?.markets ?? []);
       return normalizeGeneric(markets, "Limitless");
     } catch (error) {
-      console.error("Limitless fetch error:", error);
       return [];
     }
   }
@@ -175,33 +224,53 @@ export class DataFetcher {
     try {
       const url = process.env.MYRIAD_API_URL || "https://api.myriad.market/markets";
       const apiKey = process.env.MYRIAD_API_KEY;
-      const data = await getJson(url, apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined, { timeoutMs: 20000, retries: 2 });
-      console.log("Myriad data:", data);
+      const data = await getJson(
+        url,
+        apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+        { timeoutMs: 20000, retries: 2 }
+      );
       const markets: AnyRecord[] = Array.isArray(data) ? data : (data?.markets ?? []);
       return normalizeGeneric(markets, "Myriad");
     } catch (error) {
-      console.error("Myriad fetch error:", error);
       return [];
     }
   }
 
+  // === UPDATED: Fetches ALL Kalshi markets via pagination ===
   private async fetchKalshi(): Promise<NormalizedMarketData[]> {
     try {
-      const url = process.env.KALSHI_API_URL || "https://api.elections.kalshi.com/v2/markets";
-      const apiKey = process.env.KALSHI_API_KEY;
-      const apiSecret = process.env.KALSHI_API_SECRET;
-      const headers: Record<string, string> | undefined = apiKey
-        ? { "X-API-Key": apiKey, "X-API-Secret": apiSecret ?? "" }
-        : undefined;
-      const candidates = [
-        url,
-        "https://trading-api.kalshi.com/v2/markets",
-        "https://api.elections.kalshi.com/v2/markets",
-        "https://api.elections.kalshi.com/v2/markets?limit=1000",
-      ];
-      const data = await getFirstWorkingJson(candidates, headers, { timeoutMs: 15000, retries: 1 });
-      const markets: AnyRecord[] = Array.isArray(data) ? data : (data?.markets ?? []);
-      return normalizeGeneric(markets, "Kalshi");
+      const allMarkets: AnyRecord[] = [];
+      let cursor: string | undefined;
+      const limit = 500; // Fetch in large chunks to minimize API calls
+
+      // Loop until no cursor is returned (end of data)
+      while (true) {
+        const path = "/trade-api/v2/markets";
+        const headers = generateKalshiAuthHeaders(path, "GET");
+        if (!headers) break;
+
+        let url = `https://api.elections.kalshi.com${path}?limit=${limit}&status=open`;
+        if (cursor) url += `&cursor=${cursor}`;
+
+        const data = await getJson(url, headers, { timeoutMs: 15000, retries: 2 });
+        
+        // Safety check for response format
+        const markets = Array.isArray(data) ? data : (data?.markets || []);
+        if (markets.length === 0) break;
+        
+        allMarkets.push(...markets);
+        
+        // Prepare next page
+        cursor = data?.cursor;
+        if (!cursor) break; // Stop if no more pages
+        
+        // Tiny delay to be nice to their API rate limit
+        await new Promise(r => setTimeout(r, 100));
+      }
+      
+      console.log(`Kalshi: Fetched ${allMarkets.length} total active markets (Paginated)`);
+      return normalizeGeneric(allMarkets, "Kalshi");
+
     } catch (error) {
       console.error("Kalshi fetch error:", error);
       return [];
