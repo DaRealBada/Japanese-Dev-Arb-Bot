@@ -12,14 +12,9 @@ export class KalshiSportsFetcher {
   private readonly SPORTS_SERIES = [
     "KXNFL",      // NFL games
     "KXNBA",      // NBA games  
-    "KXMLB",      // MLB games
-    "KXNHL",      // NHL games
-    "KXSOCCER",   // Soccer
-    "KXUFC",      // UFC fights
-    "KXTENNIS",   // Tennis
     "SUPERBOWL",  // Super Bowl
     "NBAPLAY",    // NBA Playoffs
-    "WORLDSERIES" // World Series
+    "NFLPLAY",    // NFL Playoffs
   ];
 
   constructor(apiKey: string, privateKeyPath: string) {

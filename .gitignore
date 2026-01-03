@@ -6,5 +6,3 @@ vite.config.ts.*
 *.tar.gzserver/config/credentials.json
 server/config/credentials.json
 .env
-kalshi_private_key.pem
-kalshi_private_key_original.pem

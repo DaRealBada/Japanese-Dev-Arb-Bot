@@ -94,8 +94,7 @@ export class TeamDictionary {
       });
     });
   }
-
-  extractTeams(title: string): { abbrs: string[], sport: 'NBA' | 'NFL' | null } {
+  extractTeams(title: string, platform?: 'Poly' | 'Kalshi'): { abbrs: string[], sport: 'NBA' | 'NFL' | null } {
     const lower = title.toLowerCase();
     const foundTeams = new Map<string, TeamMapping>();
 
@@ -121,7 +120,8 @@ export class TeamDictionary {
     }
 
     if (abbrs.length === 2) {
-      console.log(`   [EXTRACT] "${title}" → [${abbrs.join(', ')}] (${sport})`);
+      console.log(`   [EXTRACT ${platform}] "${title}" → [${abbrs.join(', ')}] (${sport})`);
+
     }
 
     return { abbrs, sport };

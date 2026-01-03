@@ -10,23 +10,22 @@ export class Scheduler {
   private sheetsStorage: SheetsStorage;
 
   constructor() {
+    
     const domeApiKey = process.env.DOME_API_KEY || "";
-    const geminiApiKey = process.env.GEMINI_API_KEY || "";
     
     if (!domeApiKey) {
       throw new Error("DOME_API_KEY is required");
     }
-    if (!geminiApiKey) {
-      throw new Error("GEMINI_API_KEY is required");
-    }
     
-    this.domeFetcher = new DomeSportsFetcher(domeApiKey, geminiApiKey);
+    this.domeFetcher = new DomeSportsFetcher(domeApiKey);
     this.profitCalc = new ProfitCalculator();
 
     const credentialsPath = process.env.GOOGLE_SHEETS_CREDENTIALS || "./server/config/credentials.json";
     const spreadsheetId = process.env.GOOGLE_SHEETS_ID || "";
+    console.log(`📋 Spreadsheet ID: ${spreadsheetId}`); // ADD THIS
     this.sheetsStorage = new SheetsStorage(credentialsPath, spreadsheetId);
   }
+  
 
   private async runDetectionCycle(): Promise<void> {
     if (this.isRunning) {
@@ -51,10 +50,14 @@ export class Scheduler {
 
       console.log(`\n📊 Found ${matches.length} matched sports pairs`);
 
+      // Matches are already saved individually during fetching
+      console.log("   ✅ All matches saved to Google Sheets during fetch");
+
       const opportunities = this.profitCalc.findOpportunities(matches);
 
       if (opportunities.length === 0) {
         console.log("❌ No profitable arbitrage found");
+        console.log("   (But matches were saved for training data)");
         return;
       }
 
@@ -80,7 +83,8 @@ export class Scheduler {
 
       console.log("\n" + "=".repeat(80));
       console.log(`✅ CYCLE COMPLETE: Found ${opportunities.length} opportunities`);
-      console.log(`   Saved to Google Sheets`);
+      console.log(`   Saved opportunities to 'Arbitrage Opportunities' sheet`);
+      console.log(`   Saved ${matches.length} matched pairs to 'Matched Markets' sheet`);
       console.log("=".repeat(80) + "\n");
 
     } catch (error) {
@@ -98,6 +102,10 @@ export class Scheduler {
     console.log("\n🚀 Starting Sports Arbitrage Bot (Dome API)...\n");
 
     await this.sheetsStorage.initialize();
+    
+    // Pass sheets storage to fetcher after initialization
+    this.domeFetcher.setSheetsStorage(this.sheetsStorage);
+    
     await this.runDetectionCycle();
 
     cron.schedule("*/10 * * * *", () => {
